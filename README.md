@@ -1,3 +1,5 @@
+Code based of [**Random Boxes Are Open-world Object Detectors**](https://arxiv.org/abs/2307.08249)
+
 ## Random Boxes Are Open-world Object Detectors (ICCV 2023)
 
 **RandBox is a novel and effective model for open-world object detection.**
