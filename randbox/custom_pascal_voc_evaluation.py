@@ -15,7 +15,7 @@ from torch.distributions.weibull import Weibull
 from torch.distributions.transforms import AffineTransform
 from torch.distributions.transformed_distribution import TransformedDistribution
 from fvcore.common.file_io import PathManager
-
+from detectron2.data.datasets.coco import load_coco_json
 from detectron2.data import MetadataCatalog
 from detectron2.utils import comm
 
@@ -43,6 +43,7 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
     Pascal VOC Matlab API, and should produce similar but not identical results to the
     official API.
     """
+    
 
     def __init__(self, dataset_name, cfg=None):
         """
@@ -50,11 +51,11 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
             dataset_name (str): name of the dataset, e.g., "voc_2007_test"
         """
         self._dataset_name = dataset_name
-        meta = MetadataCatalog.get(dataset_name)
+        meta = MetadataCatalog.get('voc_2007_test')
         self._anno_file_template = os.path.join('./datasets', "Annotations", "{}.xml")
         self._image_set_path = os.path.join('./split', "all_task_test.txt")
         self._class_names = meta.thing_classes
-        self._is_2007 = False
+        self._is_2007 = True#Cambio a true
         # self._is_2007 = meta.year == 2007
         self._cpu_device = torch.device("cpu")
         self._logger = logging.getLogger(__name__)
@@ -68,12 +69,17 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
 
 
 
-
+    def xywh_to_xminyminxmaxymax(x,y,w,h):#AÑADO, PARA CAMBIAR EL FORMATO DE LAS BBOXES DE LAS ANOTACIONES
+        xmin = x
+        ymin = y
+        xmax = x + w
+        ymax = y + h
+        return xmin, ymin, xmax, ymax
 
     def reset(self):
         self._predictions = defaultdict(list)  # class name -> list of prediction strings
 
-
+    
 
     def process(self, inputs, outputs):
         for input, output in zip(inputs, outputs):
@@ -149,6 +155,44 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
         Returns:
             dict: has a key "segm", whose value is a dict of "AP", "AP50", and "AP75".
         """
+        #AÑADO
+        targets_wof = load_coco_json('tao/frames', 'tao/annotations-1.0/train.json')
+        targets = []
+        for annotation in targets_wof:
+            file_name = annotation['file_name']
+            if not (file_name.startswith('tao/frames/train/HACS') or file_name.startswith('tao/frames/train/AVA')):
+                targets.append(annotation)
+        for annotation in targets: #CAMBIO DE JPEG A JPG, JPEG NO EXISTE
+            file_name = annotation['file_name']
+            if file_name.endswith('.jpeg'):
+                annotation['file_name'] = annotation['file_name'].replace('jpeg', 'jpg')
+
+        TAO_TO_COCO_MAPPING = {91: 13, 58: 34, 621: 33, 747: 49, 118: 8, 221: 51, 95: 1, 126: 73, 1122: 79, 729: 27, 926: 48, 1117: 61, 1038: 11, 1215: 40, 276: 74, 78: 21, 1162: 75, 699: 68, 185: 55, 13: 47, 79: 59, 982: 30, 371: 60, 896: 65, 99: 14, 642: 63, 1135: 6, 717: 64, 829: 53, 1115: 70, 235: 67, 805: 0, 41: 32, 452: 10, 1155: 25, 1144: 7, 625: 43, 60: 35, 502: 23, 4: 4, 779: 12, 1001: 57, 1099: 38, 34: 24, 45: 46, 139: 45, 980: 36, 133: 39, 382: 16, 480: 29, 154: 50, 429: 20, 211: 2, 392: 54, 36: 28, 347: 41, 544: 78, 1057: 37, 1132: 9, 1097: 62, 1018: 44, 579: 17, 714: 3, 1229: 22, 229: 15, 1091: 77, 35: 26, 979: 71, 299: 66, 174: 5, 475: 42, 237: 56, 428: 72, 937: 76, 961: 18, 852: 58, 993: 31, 81: 19}
+        COCO_TO_OWOD_MAPPING = {0: 14, 1: 1, 2: 6, 3: 13, 4: 0, 5: 5, 6: 18, 7: 20, 8: 3, 9: 21, 10: 22, 11: 23, 12: 24, 13: 25, 14: 2, 15: 7, 16: 11, 17: 12, 18: 16, 19: 9, 20: 26, 21: 27, 22: 28, 23: 29, 24: 30, 25: 31, 26: 32, 27: 33, 28: 34, 29: 40, 30: 41, 31: 42, 32: 43, 33: 44, 34: 45, 35: 46, 36: 47, 37: 48, 38: 49, 39: 4, 40: 74, 41: 75, 42: 76, 43: 77, 44: 78, 45: 79, 46: 50, 47: 51, 48: 52, 49: 53, 50: 54, 51: 55, 52: 56, 53: 57, 54: 58, 55: 59, 56: 8, 57: 17, 58: 15, 59: 60, 60: 10, 61: 61, 62: 19, 63: 62, 64: 63, 65: 64, 66: 65, 67: 66, 68: 35, 69: 36, 70: 37, 71: 38, 72: 39, 73: 67, 74: 68, 75: 69, 76: 70, 77: 71, 78: 72, 79: 73}
+
+        for key in COCO_TO_OWOD_MAPPING:
+            if COCO_TO_OWOD_MAPPING[key]>19:
+                COCO_TO_OWOD_MAPPING[key]=80
+
+        for img in targets:
+                for ann in img['annotations']:
+                    category_id = ann['category_id']
+                    if category_id in TAO_TO_COCO_MAPPING:
+                        ann['category_id'] = TAO_TO_COCO_MAPPING[category_id]
+            
+        for img in targets:
+            for ann in img['annotations']:
+                category_id = ann['category_id']
+                if category_id in COCO_TO_OWOD_MAPPING:
+                    ann['category_id'] = COCO_TO_OWOD_MAPPING[category_id] #ANOTACIONES EN FORMATO PAPER
+                else:
+                    ann['category_id'] = 80 #algunos no están en el mapping
+        for img in targets:
+            for ann in img['annotations']:
+                x,y,w,h = ann['bbox']
+                ann['bbox'] = PascalVOCDetectionEvaluator.xywh_to_xminyminxmaxymax(x,y,w,h)#cambio las bboxes
+        #HASTA AQUÍ
+                
         all_predictions = comm.gather(self._predictions, dst=0)
         if not comm.is_main_process():
             return
@@ -186,10 +230,10 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
 
                 # for thresh in range(50, 100, 5):
                 thresh = 50
-                rec, prec, ap, unk_det_as_known, num_unk, tp_plus_fp_closed_set, fp_open_set = voc_eval(
+                rec, prec, ap, unk_det_as_known, num_unk, tp_plus_fp_closed_set, fp_open_set = voc_eval(targets, self._class_names,
                     res_file_template,
-                    self._anno_file_template,
-                    self._image_set_path,
+                    self._anno_file_template,#me falta
+                    self._image_set_path,#me falta
                     cls_name,
                     ovthresh=thresh / 100.0,
                     use_07_metric=self._is_2007,
@@ -374,7 +418,7 @@ def voc_ap(rec, prec, use_07_metric=False):
     return ap
 
 
-def voc_eval(detpath, annopath, imagesetfile, classname, ovthresh=0.5, use_07_metric=False, known_classes=None):
+def voc_eval(all_targets, class_names, detpath, annopath, imagesetfile, classname, ovthresh=0.5, use_07_metric=False, known_classes=None):
     """rec, prec, ap = voc_eval(detpath,
                                 annopath,
                                 imagesetfile,
@@ -418,15 +462,38 @@ def voc_eval(detpath, annopath, imagesetfile, classname, ovthresh=0.5, use_07_me
     # extract gt objects for this class
     class_recs = {}
     npos = 0
-    for imagename in imagenames:
-        R = [obj for obj in recs[imagename] if obj["name"] == classname]
-        bbox = np.array([x["bbox"] for x in R])
-        difficult = np.array([x["difficult"] for x in R]).astype(bool)
-        # difficult = np.array([False for x in R]).astype(np.bool)  # treat all "difficult" as GT
+    # for imagename in imagenames:
+    #     R = [obj for obj in recs[imagename] if obj["name"] == classname]
+    #     bbox = np.array([x["bbox"] for x in R])
+    #     difficult = np.array([x["difficult"] for x in R]).astype(bool)
+    #     # difficult = np.array([False for x in R]).astype(np.bool)  # treat all "difficult" as GT
+    #     det = [False] * len(R)
+    #     npos = npos + sum(~difficult)
+    #     class_recs[imagename] = {"bbox": bbox, "difficult": difficult, "det": det}
+    new_annotations = [] #CAMBIO A MI FORMATO DE ANOTACIONES
+    # Classname to idx
+    class_mapping = {class_name: idx for idx, class_name in enumerate(class_names)}
+    class_mapping["unknown"] = 80
+    class_idx = class_mapping[classname]
+
+    for annotation in all_targets: #FORMATO PRÁCTICO PARA SACAR LAS ANOTACIONES DE CADA CLASE
+        image_annotation = {'file_name': annotation['file_name'], 'bboxes': [], 'category_ids': []}
+        for ann in annotation['annotations']:
+            image_annotation['bboxes'].append(ann['bbox'])
+            image_annotation['category_ids'].append(ann['category_id'])
+        new_annotations.append(image_annotation)
+
+    for target in new_annotations: #CAMBIO
+        #if target['img_name'] in imagenames:
+        imagename = target['file_name'].replace(".jpg", "") #TENGO QUE QUITAR EL JPG?
+        current_class_gt_mask = np.array(target['category_ids'] )== class_idx #COJO LOS GT DE CADA CLASE, CAMBIO LO ANTERIOR A MI FORMATO
+        R = [cat_id for cat_id, mask_value in zip(target['category_ids'], current_class_gt_mask) if mask_value]
+        bbox = np.array([bbox for bbox, mask_value in zip(target['bboxes'], current_class_gt_mask) if mask_value]) #.numpy()??
+        difficult = np.array([False for x in R]).astype(bool)  # All are non difficult
         det = [False] * len(R)
-        npos = npos + sum(~difficult)
-        class_recs[imagename] = {"bbox": bbox, "difficult": difficult, "det": det}
-        
+        npos = npos + sum(~difficult)  # Number of non-difficult GTs, always same as len(R)
+        class_recs[imagename] = {"bbox": bbox, "difficult": difficult, "det": det} #POR QUÉ BBOX Y DET ESTÁN VACÍAS?
+    
 #     print(class_recs)
     # read dets
     detfile = detpath.format(classname)

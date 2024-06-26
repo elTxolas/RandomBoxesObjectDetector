@@ -57,7 +57,7 @@ def add_RandBox_config(cfg):
     # Inference
     cfg.MODEL.RandBox.USE_NMS = True
     cfg.MODEL.RandBox.M_STEP = 20
-    cfg.MODEL.RandBox.SAMPLING_METHOD = 'Random_'
+    cfg.MODEL.RandBox.SAMPLING_METHOD = 'Random'
     
     
     # Swin Backbones

@@ -18,12 +18,12 @@ from detectron2.utils.logger import setup_logger
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
 from detectron2.data import build_detection_train_loader
-from detectron2.engine import DefaultTrainer, default_argument_parser, default_setup, launch, create_ddp_model, \
+from detectron2.engine import default_argument_parser, default_setup, launch, create_ddp_model, \
     AMPTrainer, SimpleTrainer, hooks
 from detectron2.evaluation import COCOEvaluator, LVISEvaluator, verify_results
 from detectron2.solver.build import maybe_add_gradient_clipping
 from detectron2.modeling import build_model
-
+from detectron2.engine.my_defaults import DefaultTrainer#mi default
 from randbox import RandBoxDatasetMapper, add_RandBox_config, RandBoxWithTTA
 from randbox.util.model_ema import add_model_ema_configs, may_build_model_ema, may_get_ema_checkpointer, EMAHook, \
     apply_model_ema_and_restore, EMADetectionCheckpointer
@@ -31,7 +31,7 @@ from randbox.util.model_ema import add_model_ema_configs, may_build_model_ema, m
 
 from detectron2.data import DatasetCatalog, MetadataCatalog
 from detectron2.data.datasets.coco import load_coco_json
-from randbox.pascal_voc_evaluation import PascalVOCDetectionEvaluator
+from randbox.my_pascal_voc_evaluation import PascalVOCDetectionEvaluator
 
 class Register:
     """用于注册自己的数据集"""
@@ -44,15 +44,15 @@ class Register:
         # ANN_ROOT = os.path.join(self.DATASET_ROOT, 'COCOformat')
         self.ANN_ROOT = self.DATASET_ROOT
 
-        self.TRAIN_PATH = os.path.join(self.DATASET_ROOT, 'images/train')
-        self.VAL_PATH = os.path.join(self.DATASET_ROOT, 'images/test')
-        self.TRAIN_JSON = os.path.join(self.ANN_ROOT, 'annotations/train.json')
-        self.VAL_JSON = os.path.join(self.ANN_ROOT, 'annotations/test.json')
+        # self.TRAIN_PATH = os.path.join(self.DATASET_ROOT, 'images/train')
+        self.VAL_PATH = os.path.join(self.DATASET_ROOT, 'frames')#por qué con /train no me filtra?
+        # self.TRAIN_JSON = os.path.join(self.ANN_ROOT, 'annotations/train.json')
+        self.VAL_JSON = os.path.join(self.ANN_ROOT, 'annotations-1.0/train.json')
         # VAL_JSON = os.path.join(self.ANN_ROOT, 'test.json')
 
         # 声明数据集的子集
         self.PREDEFINED_SPLITS_DATASET = {
-            "my_train": (self.TRAIN_PATH, self.TRAIN_JSON),
+            #"my_train": (self.TRAIN_PATH, self.TRAIN_JSON),
             "my_val": (self.VAL_PATH, self.VAL_JSON),
         }
 
@@ -62,10 +62,10 @@ class Register:
         注册数据集（这一步就是将自定义数据集注册进Detectron2）
         """
         for key, (image_root, json_file) in self.PREDEFINED_SPLITS_DATASET.items():
-            self.register_dataset_instances(self,name=key,
+            targets = self.register_dataset_instances(self,name=key,
                                             json_file=json_file,
-                                            image_root=image_root)
-
+                                            image_root=image_root)#añado targets, para llevarlos al main y meterlo en evaluator
+        return targets
     @staticmethod
     def register_dataset_instances(self, name, json_file, image_root):
         """
@@ -73,12 +73,68 @@ class Register:
                  register metadata to MetadataCatalog and set attribute
         注册数据集实例，加载数据集中的对象实例
         """
+        #Añado para filtrar y corregir bboxes de anotaciones
+        # targets_wof = load_coco_json(json_file, image_root, name)#porque las id con -1?
+        if self.DATASET_ROOT == 'tao/':
+            # targets_wof = load_coco_json(json_file, image_root)#si no pongo el name, no me hace el -1, CAMBIO
+            # targets = []
+            # # for annotation in targets_wof: HAGO SOLO CON UN FOLDER
+            # #     file_name = annotation['file_name']
+            # #     if not (file_name.startswith('tao/frames/train/HACS') or file_name.startswith('tao/frames/train/AVA')):
+            # #         targets.append(annotation)
+            # for annotation in targets_wof: 
+            #     file_name = annotation['file_name']
+            #     if file_name.startswith('tao/frames/train/LaSOT/airplane-4'):
+            #         targets.append(annotation)
+            # for annotation in targets: #CAMBIO DE JPEG A JPG, JPEG NO EXISTE
+            #     file_name = annotation['file_name']
+            #     if file_name.endswith('.jpeg'):
+            #         annotation['file_name'] = annotation['file_name'].replace('jpeg', 'jpg')
 
-        DatasetCatalog.register(name, lambda: load_coco_json(json_file, image_root, name))
-        MetadataCatalog.get(name).set(json_file=json_file,
-                                      image_root=image_root,
-                                      evaluator_type="coco")
+            # TAO_TO_COCO_MAPPING = {91: 13, 58: 34, 621: 33, 747: 49, 118: 8, 221: 51, 95: 1, 126: 73, 1122: 79, 729: 27, 926: 48, 1117: 61, 1038: 11, 1215: 40, 276: 74, 78: 21, 1162: 75, 699: 68, 185: 55, 13: 47, 79: 59, 982: 30, 371: 60, 896: 65, 99: 14, 642: 63, 1135: 6, 717: 64, 829: 53, 1115: 70, 235: 67, 805: 0, 41: 32, 452: 10, 1155: 25, 1144: 7, 625: 43, 60: 35, 502: 23, 4: 4, 779: 12, 1001: 57, 1099: 38, 34: 24, 45: 46, 139: 45, 980: 36, 133: 39, 382: 16, 480: 29, 154: 50, 429: 20, 211: 2, 392: 54, 36: 28, 347: 41, 544: 78, 1057: 37, 1132: 9, 1097: 62, 1018: 44, 579: 17, 714: 3, 1229: 22, 229: 15, 1091: 77, 35: 26, 979: 71, 299: 66, 174: 5, 475: 42, 237: 56, 428: 72, 937: 76, 961: 18, 852: 58, 993: 31, 81: 19}
+            # COCO_TO_OWOD_MAPPING = {0: 14, 1: 1, 2: 6, 3: 13, 4: 0, 5: 5, 6: 18, 7: 20, 8: 3, 9: 21, 10: 22, 11: 23, 12: 24, 13: 25, 14: 2, 15: 7, 16: 11, 17: 12, 18: 16, 19: 9, 20: 26, 21: 27, 22: 28, 23: 29, 24: 30, 25: 31, 26: 32, 27: 33, 28: 34, 29: 40, 30: 41, 31: 42, 32: 43, 33: 44, 34: 45, 35: 46, 36: 47, 37: 48, 38: 49, 39: 4, 40: 74, 41: 75, 42: 76, 43: 77, 44: 78, 45: 79, 46: 50, 47: 51, 48: 52, 49: 53, 50: 54, 51: 55, 52: 56, 53: 57, 54: 58, 55: 59, 56: 8, 57: 17, 58: 15, 59: 60, 60: 10, 61: 61, 62: 19, 63: 62, 64: 63, 65: 64, 66: 65, 67: 66, 68: 35, 69: 36, 70: 37, 71: 38, 72: 39, 73: 67, 74: 68, 75: 69, 76: 70, 77: 71, 78: 72, 79: 73}
 
+            # for key in COCO_TO_OWOD_MAPPING:
+            #     if COCO_TO_OWOD_MAPPING[key]>19:
+            #         COCO_TO_OWOD_MAPPING[key]=80
+
+            # for img in targets:
+            #         for ann in img['annotations']:
+            #             category_id = ann['category_id']
+            #             if category_id in TAO_TO_COCO_MAPPING:
+            #                 ann['category_id'] = TAO_TO_COCO_MAPPING[category_id]
+                
+            # for img in targets:
+            #     for ann in img['annotations']:
+            #         category_id = ann['category_id']
+            #         if category_id in COCO_TO_OWOD_MAPPING:
+            #             ann['category_id'] = COCO_TO_OWOD_MAPPING[category_id] #ANOTACIONES EN FORMATO PAPER
+            #         else:
+            #             ann['category_id'] = 80 #algunos no están en el mapping
+            # for img in targets:
+            #     for ann in img['annotations']:
+            #         x,y,w,h = ann['bbox']
+            #         ann['bbox'] = Register.xywh_to_xminyminxmaxymax(x,y,w,h)#cambio las bboxes
+            # # hasta aquí
+            targets_wof = torch.load('targets_with_images_ALL.pkl')
+            targets = []
+            for tar in targets_wof:
+                if tar['file_name'].startswith('tao/frames/train/LaSOT'):
+                    targets.append(tar)
+            # targets = targets_wof
+            DatasetCatalog.register(name, lambda: targets)
+            MetadataCatalog.get(name).set(json_file=json_file,
+                                        image_root=image_root,
+                                        evaluator_type="coco")
+        return targets#añado
+    #Añado para cambiar formato bboxes
+    def xywh_to_xminyminxmaxymax(x,y,w,h):
+        xmin = x
+        ymin = y
+        xmax = x + w
+        ymax = y + h
+        return xmin, ymin, xmax, ymax
+    #hasta aquí
     def plain_register_dataset(self):
         """注册数据集和元数据"""
         # 训练集
@@ -89,7 +145,7 @@ class Register:
                                                  image_root=self.TRAIN_PATH)
         # DatasetCatalog.register("coco_my_val", lambda: load_coco_json(VAL_JSON, VAL_PATH, "coco_2017_val"))
         # 验证/测试集
-        DatasetCatalog.register("my_val", lambda: load_coco_json(self.VAL_JSON, self.VAL_PATH))
+        DatasetCatalog.register("my_val", lambda: self.VAL_JSON, self.VAL_PATH)
         MetadataCatalog.get("my_val").set(thing_classes=self.CLASS_NAMES,  # 可以选择开启，但是不能显示中文，这里需要注意，中文的话最好关闭
                                                evaluator_type='coco',  # 指定评估方式
                                                json_file=self.VAL_JSON,
@@ -179,7 +235,7 @@ class Trainer(DefaultTrainer):
         return model
 
     @classmethod
-    def build_evaluator(cls, cfg, dataset_name, output_folder=None):
+    def build_evaluator(cls, targets, cfg, dataset_name, output_folder=None):
         """
         Create evaluator(s) for a given dataset.
         This uses the special metadata "evaluator_type" associated with each builtin dataset.
@@ -192,7 +248,7 @@ class Trainer(DefaultTrainer):
             return LVISEvaluator(dataset_name, cfg, True, output_folder)
         else:
 #             return COCOEvaluator(dataset_name, cfg, True, output_folder)
-            return PascalVOCDetectionEvaluator(dataset_name, cfg)
+            return PascalVOCDetectionEvaluator(targets=targets, dataset_name=dataset_name, cfg=cfg)#añado targets
             
 
     @classmethod
@@ -250,7 +306,7 @@ class Trainer(DefaultTrainer):
         return optimizer
 
     @classmethod
-    def ema_test(cls, cfg, model, evaluators=None):
+    def ema_test(cls, cfg, model, targets, evaluators=None):#añado targets, para llevarlos al evaluator
         # model with ema weights
         logger = logging.getLogger("detectron2.trainer")
         if cfg.MODEL_EMA.ENABLED:
@@ -258,7 +314,7 @@ class Trainer(DefaultTrainer):
             with apply_model_ema_and_restore(model):
                 results = cls.test(cfg, model, evaluators=evaluators)
         else:
-            results = cls.test(cfg, model, evaluators=evaluators)
+            results = cls.test(cfg, model, targets, evaluators=evaluators)#mi defaults
         return results
 
     @classmethod
@@ -345,8 +401,9 @@ def setup(args):
 
 def main(args):
     cfg = setup(args)
-    data_Register=Register('./datasets/'+args.task)
-    data_Register.register_dataset()
+    data_Register=Register('tao/')
+    #data_Register=Register('./datasets/'+args.task)
+    targets = data_Register.register_dataset()
     if args.eval_only:
         model = Trainer.build_model(cfg)
         kwargs = may_get_ema_checkpointer(cfg, model)
@@ -356,7 +413,7 @@ def main(args):
         else:
             DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR, **kwargs).resume_or_load(cfg.MODEL.WEIGHTS,
                                                                                            resume=args.resume)
-        res = Trainer.ema_test(cfg, model)
+        res = Trainer.ema_test(cfg, model, targets=targets)
         if cfg.TEST.AUG.ENABLED:
             res.update(Trainer.test_with_TTA(cfg, model))
         if comm.is_main_process():

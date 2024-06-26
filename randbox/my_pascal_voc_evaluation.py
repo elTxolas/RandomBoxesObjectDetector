@@ -15,23 +15,29 @@ from torch.distributions.weibull import Weibull
 from torch.distributions.transforms import AffineTransform
 from torch.distributions.transformed_distribution import TransformedDistribution
 from fvcore.common.file_io import PathManager
-
-from detectron2.data import MetadataCatalog
+from detectron2.data.datasets.coco import load_coco_json
+from detectron2.data import MetadataCatalog, DatasetCatalog
 from detectron2.utils import comm
 
 from detectron2.evaluation.evaluator import DatasetEvaluator
 import json
 np.set_printoptions(threshold=sys.maxsize)
 
+#CAMBIO PARA MI DATASET, ADEMÁS, FILTRO LAS ANOTACIONES QUE NO TENGO
+# f = open('./datasets/t1/annotations/test.json', 'r')
+# ground_truth = json.load(f)
+# f.close()
 
-f = open('./datasets/t1/annotations/test.json', 'r')
-ground_truth = json.load(f)
-f.close()
+# mapping ={}
+# for each in ground_truth['images']:
+#     mapping[each['id']]=each['file_name'].split('.')[0]
+# f = open('./tao/annotations-1.0/train.json', 'r')
+# ground_truth = json.load(f)
+# f.close()
 
-mapping ={}
-for each in ground_truth['images']:
-    mapping[each['id']]=each['file_name'].split('.')[0]
-    
+# mapping ={}
+# for each in ground_truth['images']:
+#     mapping[each['id']]=each['file_name'].split('.')[0]   
     
 class PascalVOCDetectionEvaluator(DatasetEvaluator):
     """
@@ -44,17 +50,32 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
     official API.
     """
 
-    def __init__(self, dataset_name, cfg=None):
+    def __init__(self, targets, dataset_name, cfg=None):
         """
         Args:
             dataset_name (str): name of the dataset, e.g., "voc_2007_test"
         """
         self._dataset_name = dataset_name
-        meta = MetadataCatalog.get(dataset_name)
-        self._anno_file_template = os.path.join('./datasets', "Annotations", "{}.xml")
-        self._image_set_path = os.path.join('./split', "all_task_test.txt")
+        #CAMBIO, MIS CLASES ESTÁN ORDENADAS CON EL MAPPING Y SON LAS DE LA T1 DEL PAPER
+        json_file = 'datasets/t1/annotations/test.json'
+        image_root = 'datasets/t1/images/test/'
+        name = 'val_paper'
+        # meta = MetadataCatalog.get(dataset_name)
+        #REGISTRO EL DEL PAPER PARA TENER SUS CLASS_NAMES
+        targets_paper = load_coco_json(json_file,image_root,name)
+        DatasetCatalog.register(name, lambda: targets_paper)
+        MetadataCatalog.get(name).set(json_file=json_file,
+                                    image_root=image_root,
+                                    evaluator_type="coco")
+        meta = MetadataCatalog.get(name)
+        #CAMBIO, YO NO TENGO NI XML DE ANOTACIONES NI SPLITS TXT
+        # self._anno_file_template = os.path.join('./datasets', "Annotations", "{}.xml")
+        # self._image_set_path = os.path.join('./split', "all_task_test.txt")
+        
+        self.targets = targets
+        
         self._class_names = meta.thing_classes
-        self._is_2007 = False
+        self._is_2007 = False#Tendré que tenerlo en cuenta??
         # self._is_2007 = meta.year == 2007
         self._cpu_device = torch.device("cpu")
         self._logger = logging.getLogger(__name__)
@@ -75,7 +96,7 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
 
 
 
-    def process(self, inputs, outputs):
+    def process(self, inputs, outputs, target):
         for input, output in zip(inputs, outputs):
             image_id = input["image_id"]
             instances = output["instances"].to(self._cpu_device)
@@ -92,9 +113,11 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
                 # The inverse of data loading logic in `datasets/pascal_voc.py`
                 xmin += 1
                 ymin += 1
-                self._predictions[cls].append(
-                    f"{image_id} {score:.3f} {xmin:.1f} {ymin:.1f} {xmax:.1f} {ymax:.1f}"
-                )
+                #Solo añado si esa imagen tiene anotaciones, así solo evalúo si tiene anotaciones
+                if target['annotations'] is not None:
+                    self._predictions[cls].append(
+                        f"{image_id} {score:.3f} {xmin:.1f} {ymin:.1f} {xmax:.1f} {ymax:.1f}"
+                    )
 
     def compute_avg_precision_at_many_recall_level_for_unk(self, precisions, recalls):
         precs = {}
@@ -181,16 +204,17 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
             for cls_id, cls_name in enumerate(self._class_names):
                 lines = predictions.get(cls_id, [""])
                 self._logger.info(cls_name + " has " + str(len(lines)) + " predictions.")
+                print(cls_name + " has " + str(len(lines)) + " predictions.")
                 with open(res_file_template.format(cls_name), "w") as f:
                     f.write("\n".join(lines))
-
                 # for thresh in range(50, 100, 5):
                 thresh = 50
+                #CAMBIO VOC_EVAL, PARA MI FORMATO DE ANOTACIONES
                 rec, prec, ap, unk_det_as_known, num_unk, tp_plus_fp_closed_set, fp_open_set = voc_eval(
                     res_file_template,
-                    self._anno_file_template,
-                    self._image_set_path,
-                    cls_name,
+                    targets=self.targets,
+                    class_id=cls_id,#YO CON ID?
+                    classname=cls_name,
                     ovthresh=thresh / 100.0,
                     use_07_metric=self._is_2007,
                     known_classes=self.known_classes
@@ -247,23 +271,50 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
             print("Prev class Recall50: " + str(np.mean(recs[50][:self.prev_intro_cls])))
 
             # self._logger.info("Prev class AP75: " + str(np.mean(aps[75][:self.prev_intro_cls])))
+        current_aps_50 = aps[50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls]
+        current_precs_50 = precs[50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls]
 
+        filtered_current_aps_50 = []
+        filtered_current_precs_50 = []
+
+        for ap, prec in zip(current_aps_50, current_precs_50):
+            if not np.isnan(ap):
+                filtered_current_aps_50.append(ap)
+                filtered_current_precs_50.append(prec)#ASÍ NO TENGO EN CUENTA LAS PRECISIONES DE AQUELLAS CLASES PARA LAS QUE NO HAY ANOTACIONES
+
+        current_recall_50 = recs[50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls]
+        filtered_current_recall_50 = [ap for ap in current_recall_50 if not np.isnan(ap)]
         # self._logger.info("\nCurrent class AP__: " + str(np.mean(avg_precs[self.prev_intro_cls:self.curr_intro_cls])))
-        self._logger.info("Current class AP50: " + str(np.mean(aps[50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls])))
-        self._logger.info("Current class Precisions50: " + str(np.mean(precs[50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls])))
-        self._logger.info("Current class Recall50: " + str(np.mean(recs[50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls])))
-        print("Current class AP50: " + str(np.mean(aps[50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls])))
-        print("Current class Precisions50: " + str(np.mean(precs[50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls])))
-        print("Current class Recall50: " + str(np.mean(recs[50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls])))
+        self._logger.info("Current class AP50: " + str(np.mean(filtered_current_aps_50)))
+        self._logger.info("Current class Precisions50: " + str(np.mean(filtered_current_precs_50)))
+        self._logger.info("Current class Recall50: " + str(np.mean(filtered_current_recall_50)))
+        print("Current class AP50: " + str(np.mean(filtered_current_aps_50)))
+        print("Current class Precisions50: " + str(np.mean(filtered_current_precs_50)))
+        print("Current class Recall50: " + str(np.mean(filtered_current_recall_50)))
         # self._logger.info("Current class AP75: " + str(np.mean(aps[75][self.prev_intro_cls:self.curr_intro_cls])))
 
         # self._logger.info("\nKnown AP__: " + str(np.mean(avg_precs[:self.prev_intro_cls + self.curr_intro_cls])))
-        self._logger.info("Known AP50: " + str(np.mean(aps[50][:self.prev_intro_cls + self.curr_intro_cls])))
-        self._logger.info("Known Precisions50: " + str(np.mean(precs[50][:self.prev_intro_cls + self.curr_intro_cls])))
-        self._logger.info("Known Recall50: " + str(np.mean(recs[50][:self.prev_intro_cls + self.curr_intro_cls])))
-        print("Known AP50: " + str(np.mean(aps[50][:self.prev_intro_cls + self.curr_intro_cls])))
-        print("Known Precisions50: " + str(np.mean(precs[50][:self.prev_intro_cls + self.curr_intro_cls])))
-        print("Known Recall50: " + str(np.mean(recs[50][:self.prev_intro_cls + self.curr_intro_cls])))
+        #FILTRO SI NO HAY ANOTACIONES PARA ESA PREDICCIÓN
+        known_aps_50 = aps[50][:self.prev_intro_cls + self.curr_intro_cls]
+        known_precs_50 = precs[50][:self.prev_intro_cls + self.curr_intro_cls]
+
+        filtered_known_aps_50 = []
+        filtered_known_precs_50 = []
+
+        for ap, prec in zip(known_aps_50, known_precs_50):
+            if not np.isnan(ap):
+                filtered_known_aps_50.append(ap)
+                filtered_known_precs_50.append(prec)#ASÍ NO TENGO EN CUENTA LAS PRECISIONES DE AQUELLAS CLASES PARA LAS QUE NO HAY ANOTACIONES
+
+        known_recall_50 = recs[50][:self.prev_intro_cls + self.curr_intro_cls]
+        filtered_known_recall_50 = [ap for ap in known_recall_50 if not np.isnan(ap)]
+        #HASTA AQUÍ, Y AHORA CAMBIO LOS AP[50]... POR LAS VARIABLES FILTRADAS
+        self._logger.info("Known AP50: " + str(np.mean(filtered_known_aps_50)))
+        self._logger.info("Known Precisions50: " + str(np.mean(filtered_known_precs_50)))
+        self._logger.info("Known Recall50: " + str(np.mean(filtered_known_recall_50)))
+        print("Known AP50: " + str(np.mean(filtered_known_aps_50)))
+        print("Known Precisions50: " + str(np.mean(filtered_known_precs_50)))
+        print("Known Recall50: " + str(np.mean(filtered_known_recall_50)))
         # self._logger.info("Known AP75: " + str(np.mean(aps[75][:self.prev_intro_cls + self.curr_intro_cls])))
 
         # self._logger.info("\nUnknown AP__: " + str(avg_precs[-1]))
@@ -374,7 +425,7 @@ def voc_ap(rec, prec, use_07_metric=False):
     return ap
 
 
-def voc_eval(detpath, annopath, imagesetfile, classname, ovthresh=0.5, use_07_metric=False, known_classes=None):
+def voc_eval(detpath, targets, class_id, classname, ovthresh=0.5, use_07_metric=False, known_classes=None):
     """rec, prec, ap = voc_eval(detpath,
                                 annopath,
                                 imagesetfile,
@@ -400,33 +451,52 @@ def voc_eval(detpath, annopath, imagesetfile, classname, ovthresh=0.5, use_07_me
 
     # first load gt
     # read list of images
-    with PathManager.open(imagesetfile, "r") as f:
-        lines = f.readlines()
-    imagenames = [x.strip() for x in lines]
+    # with PathManager.open(imagesetfile, "r") as f:
+    #     lines = f.readlines()
+    # imagenames = [x.strip() for x in lines]
 
-    imagenames_filtered = []
-    # load annots
-    recs = {}
-    for imagename in imagenames:
-        rec = parse_rec(annopath.format(imagename), tuple(known_classes))
-        if rec is not None:
-            recs[imagename] = rec
-            imagenames_filtered.append(imagename)
+    # imagenames_filtered = []
+    # # load annots
+    # recs = {}
+    # for imagename in imagenames:
+    #     rec = parse_rec(annopath.format(imagename), tuple(known_classes))
+    #     if rec is not None:
+    #         recs[imagename] = rec
+    #         imagenames_filtered.append(imagename)
 
-    imagenames = imagenames_filtered
+    # imagenames = imagenames_filtered
 
     # extract gt objects for this class
     class_recs = {}
     npos = 0
-    for imagename in imagenames:
-        R = [obj for obj in recs[imagename] if obj["name"] == classname]
-        bbox = np.array([x["bbox"] for x in R])
-        difficult = np.array([x["difficult"] for x in R]).astype(bool)
-        # difficult = np.array([False for x in R]).astype(np.bool)  # treat all "difficult" as GT
+    #CAMBIO A MI FORMATO DE ANOTACIONES
+    # for imagename in imagenames:
+    #     R = [obj for obj in recs[imagename] if obj["name"] == classname]
+    #     bbox = np.array([x["bbox"] for x in R])
+    #     difficult = np.array([x["difficult"] for x in R]).astype(bool)
+    #     # difficult = np.array([False for x in R]).astype(np.bool)  # treat all "difficult" as GT
+    #     det = [False] * len(R)
+    #     npos = npos + sum(~difficult)
+    #     class_recs[imagename] = {"bbox": bbox, "difficult": difficult, "det": det}
+    new_annotations = []
+    for annotation in targets: #FORMATO PRÁCTICO PARA SACAR LAS ANOTACIONES DE CADA CLASE
+        if annotation['annotations'] is not None:#filtro, solo imagenes con anotaciones
+            image_annotation = {'file_name': annotation['file_name'], 'bboxes': [], 'category_ids': [], 'image_id': annotation['image_id']}
+            for ann in annotation['annotations']:
+                image_annotation['bboxes'].append(ann['bbox'])
+                image_annotation['category_ids'].append(ann['category_id'])
+            new_annotations.append(image_annotation)
+
+    for target in new_annotations: #CAMBIO
+        #if target['img_name'] in imagenames:
+        imagename = target['file_name'].replace(".jpg", "") #TENGO QUE QUITAR EL JPG?
+        current_class_gt_mask = np.array(target['category_ids'] )== class_id #COJO LOS GT DE CADA CLASE, CAMBIO LO ANTERIOR A MI FORMATO
+        R = [cat_id for cat_id, mask_value in zip(target['category_ids'], current_class_gt_mask) if mask_value]
+        bbox = np.array([bbox for bbox, mask_value in zip(target['bboxes'], current_class_gt_mask) if mask_value])
+        difficult = np.array([False for x in R]).astype(bool)  # All are non difficult
         det = [False] * len(R)
-        npos = npos + sum(~difficult)
-        class_recs[imagename] = {"bbox": bbox, "difficult": difficult, "det": det}
-        
+        npos = npos + sum(~difficult)  # Number of non-difficult GTs, always same as len(R)
+        class_recs[imagename] = {"bbox": bbox, "difficult": difficult, "det": det} 
 #     print(class_recs)
     # read dets
     detfile = detpath.format(classname)
@@ -452,8 +522,12 @@ def voc_eval(detpath, annopath, imagesetfile, classname, ovthresh=0.5, use_07_me
     # if 'unknown' not in classname:
     #     return tp, fp, 0
 #     print(2,image_ids)
+    mapping ={}#mapeo solo con las imagenes con anotaciones
+    for each in new_annotations:
+        mapping[each['image_id']]=each['file_name'].split('.')[0] 
+
     for d in range(nd):
-        R = class_recs[str(mapping[int(image_ids[d])])]
+        R = class_recs[str(mapping[int(image_ids[d])])]#añado tao/frames/, porque en el mapping no está
         bb = BB[d, :].astype(float)
         ovmax = -np.inf
         BBGT = R["bbox"].astype(float)
@@ -493,7 +567,7 @@ def voc_eval(detpath, annopath, imagesetfile, classname, ovthresh=0.5, use_07_me
     # compute precision recall
     fp = np.cumsum(fp)
     tp = np.cumsum(tp)
-    rec = tp / float(npos)
+    rec = tp / float(npos) 
     # avoid divide by zero in case the first detection matches a difficult
     # ground truth
     prec = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
@@ -518,12 +592,15 @@ def voc_eval(detpath, annopath, imagesetfile, classname, ovthresh=0.5, use_07_me
     # Finding GT of unknown objects
     unknown_class_recs = {}
     n_unk = 0
-    for imagename in imagenames:
-        R = [obj for obj in recs[imagename] if obj["name"] == 'unknown']
-        bbox = np.array([x["bbox"] for x in R])
-        difficult = np.array([x["difficult"] for x in R]).astype(bool)
+    for target in new_annotations: #LO MISMO PARA UNKNOWN
+        #if target['img_name'] in imagenames:
+        imagename = target['file_name'].replace(".jpg", "") #TENGO QUE QUITAR EL JPG?
+        current_class_gt_mask = np.array(target['category_ids'] )== 80 #COJO LOS GT DE CADA CLASE, CAMBIO LO ANTERIOR A MI FORMATO
+        R = [cat_id for cat_id, mask_value in zip(target['category_ids'], current_class_gt_mask) if mask_value]
+        bbox = np.array([bbox for bbox, mask_value in zip(target['bboxes'], current_class_gt_mask) if mask_value]) 
+        difficult = np.array([False for x in R]).astype(bool)  # All are non difficult
         det = [False] * len(R)
-        n_unk = n_unk + sum(~difficult)
+        n_unk = npos + sum(~difficult)  # Number of non-difficult GTs, always same as len(R)
         unknown_class_recs[imagename] = {"bbox": bbox, "difficult": difficult, "det": det}
 
     if classname == 'unknown':
@@ -533,7 +610,7 @@ def voc_eval(detpath, annopath, imagesetfile, classname, ovthresh=0.5, use_07_me
     # If so, it is an unknown object that was classified as known.
     is_unk = np.zeros(nd)
     for d in range(nd):
-        R = unknown_class_recs[str(mapping[int(image_ids[d])])]
+        R = unknown_class_recs[str(mapping[int(image_ids[d])])]#añado tao/frames/ en unknown también
         bb = BB[d, :].astype(float)
         ovmax = -np.inf
         BBGT = R["bbox"].astype(float)

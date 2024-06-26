@@ -7,9 +7,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-import cv2
-from detectron2.utils.visualizer import Visualizer
-
 from detectron2.layers import batched_nms
 from detectron2.modeling import META_ARCH_REGISTRY, build_backbone, detector_postprocess
 
@@ -19,8 +16,6 @@ from .loss import SetCriterionDynamicK, HungarianMatcherDynamicK
 from .head import DynamicHead
 from .util.box_ops import box_cxcywh_to_xyxy, box_xyxy_to_cxcywh
 from .util.misc import nested_tensor_from_tensor_list
-from randbox.test_time_augmentation import RandBoxWithTTA
-from torchvision.ops import box_iou
 
 __all__ = ["RandBox"]
 
@@ -172,11 +167,11 @@ class RandBox(nn.Module):
         )
 
                    
-    #añado prev_bboxes   
-    def model_predictions(self, prev_bboxes, backbone_feats, images_whwh, x, t, x_self_cond=None, clip_x_start=False,sample_i=0):
-        # self.sampling_method = 'Random_'#por si quiero 10000 propuestas
+        
+    def model_predictions(self, backbone_feats, images_whwh, x, t, x_self_cond=None, clip_x_start=False,sample_i=0):
+        
         if self.sampling_method == 'Random':
-            x_boxes = torch.clamp(x[:, :self.num_proposals, :], min=-1 * self.scale, max=self.scale)#cambio, solo cojo 500, SIEMPRE, LUEGO LE AÑADO LAS 20 "NO RANDOM"
+            x_boxes = torch.clamp(x, min=-1 * self.scale, max=self.scale)
             x_boxes = ((x_boxes / self.scale) + 1) / 2
         else:
             
@@ -185,44 +180,8 @@ class RandBox(nn.Module):
         
         x_boxes = box_cxcywh_to_xyxy(x_boxes)
         x_boxes = x_boxes * images_whwh[:, None, :]
-        # AÑADO, VOY GENERANDO BBOXES MÁS PRECISAS (LAS TENGO QUE METER AL HEAD???)
-        if prev_bboxes is not None: 
-            if  prev_bboxes.shape[0] != 0: #por si no tengo buenas predicciones en la anterior
-                num_new_boxes = 3
-                mean = 0 
-                #genero std en base a las dimensiones de la imagen
-                base_width = 1333
-                base_height = 750
-                base_std = 7
-                current_width = images_whwh[0][0].item()
-                current_height = images_whwh[0][1].item()
-                
-                # Calculate the proportional factors for width and height
-                width_factor = current_width / base_width
-                height_factor = current_height / base_height
-                
-                # Use the average of the width and height factors to maintain aspect ratio
-                proportional_factor = (width_factor + height_factor) / 2
-                
-                # Calculate the new std
-                new_std = base_std * proportional_factor
-                # hasta aquí
-                std_dev = new_std
-                new_boxes = []
-                for bbox in prev_bboxes:
-                    for _ in range(num_new_boxes):
-                        offsets = torch.randn(4, device=self.device) * std_dev
-                        new_bbox = bbox + offsets
-                        new_boxes.append(new_bbox)
-
-                    new_boxes_tensor = torch.stack(new_boxes)#.unsqueeze(0)
-                # x_boxes = torch.cat([x_boxes, new_boxes_tensor], dim=1)
-                ious = box_iou(new_boxes_tensor, x_boxes[0])   
-                for i,iou in enumerate(ious):
-                    _ ,ind = iou.topk(1)
-                    x_boxes[0][ind] = new_boxes_tensor[i]
-        #HASTA AQUÍ
         outputs_class, outputs_coord = self.head(backbone_feats, x_boxes, None)
+
         x_start = outputs_coord[-1]  # (batch, num_proposals, 4) predict boxes: absolute coordinates (x1, y1, x2, y2)
         x_start = x_start / images_whwh[:, None, :]
         x_start = box_xyxy_to_cxcywh(x_start)
@@ -233,11 +192,8 @@ class RandBox(nn.Module):
         return ModelPrediction(pred_noise, x_start), outputs_class, outputs_coord
 
     @torch.no_grad()
-    def _sample(self, batched_inputs, best_bboxes_prev_iter, backbone_feats, images_whwh, images, clip_denoised=True, do_postprocess=True):
+    def _sample(self, batched_inputs, backbone_feats, images_whwh, images, clip_denoised=True, do_postprocess=True):
         batch = images_whwh.shape[0]
-        # if best_bboxes_prev_iter is not None:
-        #     shape = (batch, self.num_proposals + best_bboxes_prev_iter.shape[0] * 3, 4) #añado la shape de las bboxes que se suman, 5 es las bboxes que genero por cada bbox
-        # else:
         shape = (batch, self.num_proposals, 4)
         total_timesteps, sampling_timesteps, eta, objective = self.num_timesteps, self.sampling_timesteps, self._sampling_eta, self.objective
 
@@ -254,7 +210,8 @@ class RandBox(nn.Module):
             for time, time_next in time_pairs:
                 time_cond = torch.full((batch,), time, device=self.device, dtype=torch.long)
                 self_cond = x_start if self.self_condition else None
-                preds, class_cat, coord_cat = self.model_predictions(best_bboxes_prev_iter, backbone_feats, images_whwh, img, time_cond,
+
+                preds, class_cat, coord_cat = self.model_predictions(backbone_feats, images_whwh, img, time_cond,
                                                                              self_cond, clip_x_start=clip_denoised)
                 pred_noise, x_start = preds.pred_noise, preds.pred_x_start
         else:
@@ -263,7 +220,7 @@ class RandBox(nn.Module):
                     time_cond = torch.full((batch,), time, device=self.device, dtype=torch.long)
                     self_cond = x_start if self.self_condition else None
 
-                    preds, outputs_class, outputs_coord = self.model_predictions(best_bboxes_prev_iter, backbone_feats, images_whwh, img, time_cond,
+                    preds, outputs_class, outputs_coord = self.model_predictions(backbone_feats, images_whwh, img, time_cond,
                                                                   self_cond, clip_x_start=clip_denoised,sample_i=sample_step)
                 if sample_step == 0:
                     class_cat = outputs_class
@@ -288,10 +245,10 @@ class RandBox(nn.Module):
             result.pred_classes = labels_per_image
             results = [result]
         else:
-            output = {'pred_logits': class_cat[-1], 'pred_boxes': coord_cat[-1]}#-1 devuelve el último elemento
+            output = {'pred_logits': class_cat[-1], 'pred_boxes': coord_cat[-1]}
             box_cls = output["pred_logits"]
             box_pred = output["pred_boxes"]
-            results, best_bboxes_current_iter = self.inference(box_cls, box_pred, images.image_sizes)#añado las mejores bboxes
+            results = self.inference(box_cls, box_pred, images.image_sizes)
         if do_postprocess:
             processed_results = []
             for results_per_image, input_per_image, image_size in zip(results, batched_inputs, images.image_sizes):
@@ -299,10 +256,10 @@ class RandBox(nn.Module):
                 width = input_per_image.get("width", image_size[1])
                 r = detector_postprocess(results_per_image, height, width)
                 processed_results.append({"instances": r})
-            return processed_results, best_bboxes_current_iter
+            return processed_results
 
 
-    def forward(self, batched_inputs, best_bboxes_prev_iter, do_postprocess=True):
+    def forward(self, batched_inputs, do_postprocess=True):
         """
         Args:
             batched_inputs: a list, batched outputs of :class:`DatasetMapper` .
@@ -333,8 +290,8 @@ class RandBox(nn.Module):
         self.training=False
         if not self.training:
             
-            results, best_bboxes_current_iter = self._sample(batched_inputs, best_bboxes_prev_iter, features, images_whwh, images)
-            return results, best_bboxes_current_iter
+            results = self._sample(batched_inputs, features, images_whwh, images)
+            return results
 
         if self.training:
             gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
@@ -427,13 +384,13 @@ class RandBox(nn.Module):
         if self.use_focal or self.use_fed_loss:
             scores = torch.sigmoid(box_cls)
             labels = torch.arange(self.num_classes, device=self.device). \
-                unsqueeze(0).repeat(box_pred.shape[1]*multiple_sample, 1).flatten(0, 1)#cambio a box_shape
+                unsqueeze(0).repeat(self.num_proposals*multiple_sample, 1).flatten(0, 1)
 
             for i, (scores_per_image, box_pred_per_image, image_size) in enumerate(zip(
                     scores, box_pred, image_sizes
             )):
                 result = Instances(image_size)
-                scores_per_image, topk_indices = scores_per_image.flatten(0, 1).topk(box_pred.shape[1]*multiple_sample, sorted=False)#cambio, al shape de las bbox predichas
+                scores_per_image, topk_indices = scores_per_image.flatten(0, 1).topk(self.num_proposals*multiple_sample, sorted=False)
                 labels_per_image = labels[topk_indices]
                 box_pred_per_image = box_pred_per_image.view(-1, 1, 4).repeat(1, self.num_classes, 1).view(-1, 4)
                 box_pred_per_image = box_pred_per_image[topk_indices]
@@ -442,7 +399,7 @@ class RandBox(nn.Module):
                     return box_pred_per_image, scores_per_image, labels_per_image
 
                 if self.use_nms:
-                    keep = batched_nms(box_pred_per_image, scores_per_image, labels_per_image, 0.4)
+                    keep = batched_nms(box_pred_per_image, scores_per_image, labels_per_image, 0.6)
                     box_pred_per_image = box_pred_per_image[keep]
                     scores_per_image = scores_per_image[keep]
                     labels_per_image = labels_per_image[keep]
@@ -452,15 +409,6 @@ class RandBox(nn.Module):
                 result.pred_classes = labels_per_image
                 results.append(result)
 
-                #AÑADO PARA GENERAR BBOXES AL REDEDOR DE LAS MEJORES PREDICCIONES Y FILTRO HASTA UN MÁXIMO DE 100 PREDICCIONES
-                threshold = 0.15
-                filtered_bboxes = box_pred_per_image[scores_per_image > threshold]
-
-                max_number_of_preds_per_image = 70
-                if max_number_of_preds_per_image:
-                    filtered_bboxes = filtered_bboxes[:max_number_of_preds_per_image]
-                #HASTA AQUÍ
-                
         else:
             # For each box we assign the best class or the second best if the best on is `no_object`.
             scores, labels = F.softmax(box_cls, dim=-1)[:, :, :-1].max(-1)
@@ -482,7 +430,7 @@ class RandBox(nn.Module):
                 result.pred_classes = labels_per_image
                 results.append(result)
 
-        return results, filtered_bboxes #devuelvo las filtered_bboxes
+        return results
 
     def preprocess_image(self, batched_inputs):
         """

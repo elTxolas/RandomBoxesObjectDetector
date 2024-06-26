@@ -5,7 +5,7 @@ MODEL:
     DEPTH: 50
     STRIDE_IN_1X1: False
   RandBox:
-    NUM_PROPOSALS: 500
+    NUM_PROPOSALS: 500 #paper-> 500
     NUM_CLASSES: 81
 DATASETS:
   TRAIN: ("my_train",)
