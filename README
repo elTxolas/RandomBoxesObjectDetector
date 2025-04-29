@@ -1,13 +1,4 @@
 
-README and scripts
-------------------
-
-The README and various scripts for inspection, preparation, and evaluation can be found in our git repository:
-https://github.com/mcordts/cityscapesScripts
-
-Contact
--------
-
-Marius Cordts, Mohamed Omran
-www.cityscapes-dataset.net
-mail@cityscapes-dataset.net
+⚠️ Este repositorio contiene el código desarrollado para mi Trabajo de Fin de Grado.
+El código no está completamente organizado ni documentado, pero se incluye como referencia del trabajo realizado.
+El enfoque principal se ha centrado en el desarrollo experimental, no en la publicación del código.
